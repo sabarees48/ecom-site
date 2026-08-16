@@ -20,7 +20,7 @@ spec:
       serviceAccountName: product-service-sa
       containers:
         - name: product-service
-          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/eks-demo-product-service:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION_PLACEHOLDER.amazonaws.com/eks-demo-product-service:latest
           ports:
             - containerPort: 3002
           env:
