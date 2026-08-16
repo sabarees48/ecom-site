@@ -1,0 +1,225 @@
+name: Deploy Infrastructure (CloudFormation)
+
+on:
+  workflow_dispatch:
+    inputs:
+      frontend_bucket_name:
+        description: 'Globally-unique S3 bucket name for the frontend'
+        required: true
+      notification_email:
+        description: 'Optional email to subscribe to SNS order notifications'
+        required: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT_NAME: eks-demo
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-vpc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/01-vpc.yaml \
+            --stack-name eks-demo-vpc \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset
+
+  deploy-eks-cluster:
+    needs: deploy-vpc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/02-eks-cluster.yaml \
+            --stack-name eks-demo-cluster \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset
+
+  deploy-ecr-repos:
+    needs: deploy-vpc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/03-ecr-repos.yaml \
+            --stack-name eks-demo-ecr --no-fail-on-empty-changeset
+
+  deploy-s3-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/04-s3-frontend.yaml \
+            --stack-name eks-demo-frontend-bucket \
+            --parameter-overrides BucketName=${{ github.event.inputs.frontend_bucket_name }} \
+            --no-fail-on-empty-changeset
+
+  deploy-rds:
+    needs: deploy-vpc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/05-rds.yaml \
+            --stack-name eks-demo-rds \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset
+
+  deploy-dynamodb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/06-dynamodb.yaml \
+            --stack-name eks-demo-dynamodb \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --no-fail-on-empty-changeset
+
+  deploy-messaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/07-sns-eventbridge.yaml \
+            --stack-name eks-demo-messaging \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} NotificationEmail="${{ github.event.inputs.notification_email }}" \
+            --no-fail-on-empty-changeset
+
+  deploy-lambda-functions:
+    needs: [deploy-dynamodb, deploy-messaging]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/08-lambda-functions.yaml \
+            --stack-name eks-demo-lambdas \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset
+
+  deploy-api-gateway:
+    needs: deploy-lambda-functions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/09-api-gateway.yaml \
+            --stack-name eks-demo-api-gateway \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset
+
+  deploy-bastion:
+    needs: deploy-rds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/10-ec2-bastion.yaml \
+            --stack-name eks-demo-bastion \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset
+
+  deploy-irsa-roles:
+    needs: [deploy-eks-cluster, deploy-rds, deploy-dynamodb, deploy-messaging]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/11-irsa-roles.yaml \
+            --stack-name eks-demo-irsa \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset
+
+  deploy-cloudwatch:
+    needs: [deploy-messaging, deploy-rds, deploy-lambda-functions]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/12-cloudwatch.yaml \
+            --stack-name eks-demo-cloudwatch \
+            --parameter-overrides EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+            --no-fail-on-empty-changeset
+
+  configure-cluster-access:
+    needs: [deploy-eks-cluster, deploy-ecr-repos, deploy-irsa-roles]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION} }
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name eks-demo-cluster --region ${{ env.AWS_REGION }}
+      - name: Apply namespace
+        run: kubectl apply -f k8s/namespace.yaml
+      - name: Apply IRSA service accounts
+        env:
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          sed "s/ACCOUNT_ID/$ACCOUNT_ID/g" k8s/service-accounts.yaml | kubectl apply -f -

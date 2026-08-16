@@ -1,0 +1,37 @@
+name: Deploy Frontend to S3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-frontend.yml'
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync frontend to S3
+        run: |
+          aws s3 sync frontend/ s3://${{ secrets.FRONTEND_BUCKET_NAME }} \
+            --delete \
+            --cache-control "max-age=60"
+
+      - name: Print website URL
+        run: |
+          echo "Frontend deployed to: http://${{ secrets.FRONTEND_BUCKET_NAME }}.s3-website-${{ env.AWS_REGION }}.amazonaws.com"

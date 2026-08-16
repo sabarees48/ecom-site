@@ -1,0 +1,120 @@
+name: Build and Deploy Microservices to EKS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - '.github/workflows/deploy-services.yml'
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: eks-demo-cluster
+  ECR_PREFIX: eks-demo
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [user-service, product-service, order-service, payment-service, notification-service]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          REPO: ${{ env.ECR_PREFIX }}-${{ matrix.service }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$REPO:$IMAGE_TAG -t $REGISTRY/$REPO:latest services/${{ matrix.service }}
+          docker push $REGISTRY/$REPO:$IMAGE_TAG
+          docker push $REGISTRY/$REPO:latest
+
+  deploy-to-eks:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [user-service, product-service, order-service, payment-service, notification-service]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      # Pulls live values out of the CloudFormation stacks so the deployment
+      # manifests don't need hand-edited placeholders. Values that don't apply
+      # to a given service are simply unused.
+      - name: Resolve AWS resource references
+        id: refs
+        env:
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          DB_HOST=$(aws cloudformation describe-stacks --stack-name eks-demo-rds \
+            --query "Stacks[0].Outputs[?OutputKey=='DBEndpoint'].OutputValue" --output text)
+          DB_SECRET_ARN=$(aws cloudformation describe-stacks --stack-name eks-demo-rds \
+            --query "Stacks[0].Outputs[?OutputKey=='DBSecretArn'].OutputValue" --output text)
+          TOPIC_ARN=$(aws cloudformation describe-stacks --stack-name eks-demo-messaging \
+            --query "Stacks[0].Outputs[?OutputKey=='TopicArn'].OutputValue" --output text)
+          echo "db_host=$DB_HOST" >> "$GITHUB_OUTPUT"
+          echo "db_secret_arn=$DB_SECRET_ARN" >> "$GITHUB_OUTPUT"
+          echo "topic_arn=$TOPIC_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Apply manifests
+        env:
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          DB_HOST: ${{ steps.refs.outputs.db_host }}
+          DB_SECRET_ARN: ${{ steps.refs.outputs.db_secret_arn }}
+          TOPIC_ARN: ${{ steps.refs.outputs.topic_arn }}
+        run: |
+          sed \
+            -e "s/ACCOUNT_ID/$ACCOUNT_ID/g" \
+            -e "s/REGION_PLACEHOLDER/${{ env.AWS_REGION }}/g" \
+            -e "s#DB_HOST_PLACEHOLDER#$DB_HOST#g" \
+            -e "s#DB_SECRET_ARN_PLACEHOLDER#$DB_SECRET_ARN#g" \
+            -e "s#TOPIC_ARN_PLACEHOLDER#$TOPIC_ARN#g" \
+            services/${{ matrix.service }}/k8s/deployment.yaml | kubectl apply -f -
+          kubectl apply -f services/${{ matrix.service }}/k8s/service.yaml
+
+      - name: Set new image and roll out
+        env:
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          kubectl set image deployment/${{ matrix.service }} \
+            ${{ matrix.service }}=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_PREFIX }}-${{ matrix.service }}:${{ github.sha }} \
+            -n eks-demo
+          kubectl rollout status deployment/${{ matrix.service }} -n eks-demo --timeout=120s
+
+  apply-ingress:
+    needs: deploy-to-eks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+      - name: Apply ingress
+        run: kubectl apply -f k8s/ingress.yaml
