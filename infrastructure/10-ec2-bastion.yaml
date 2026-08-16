@@ -1,7 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  EC2 bastion host for reaching RDS from a terminal during the demo. Access is
-  via SSM Session Manager only — no SSH key pair, no open inbound ports.
+  EC2 bastion host for reaching RDS and the EKS cluster from a terminal
+  during the demo. Access is via SSM Session Manager only — no SSH key
+  pair, no open inbound ports. Comes with psql, kubectl, and eksctl
+  pre-installed, and is granted cluster-admin access via an EKS Access Entry.
 
 Parameters:
   EnvironmentName:
@@ -33,6 +35,20 @@ Resources:
                 Action: secretsmanager:GetSecretValue
                 Resource:
                   Fn::ImportValue: !Sub ${EnvironmentName}-DBSecretArn
+        - PolicyName: eks-describe
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                # eks:DescribeCluster is needed by `aws eks update-kubeconfig`.
+                # Being able to describe the cluster is NOT the same as being
+                # able to run kubectl commands against it — that authorization
+                # comes from the EKS Access Entry below, which maps this role
+                # to a Kubernetes RBAC policy inside the cluster itself.
+                Action:
+                  - eks:DescribeCluster
+                  - eks:ListClusters
+                Resource: '*'
 
   BastionInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -42,7 +58,7 @@ Resources:
   BastionSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Bastion host - no inbound rules, egress only (SSM is outbound)
+      GroupDescription: Bastion host — no inbound rules, egress only (SSM is outbound)
       VpcId:
         Fn::ImportValue: !Sub ${EnvironmentName}-VpcId
       SecurityGroupEgress:
@@ -63,12 +79,46 @@ Resources:
       SecurityGroupIds:
         - !Ref BastionSecurityGroup
       UserData:
-        Fn::Base64: |
+        Fn::Base64: !Sub |
           #!/bin/bash
-          dnf install -y postgresql15
+          set -e
+          dnf install -y postgresql15 unzip
+
+          # kubectl (match this to your cluster's Kubernetes minor version if you change it)
+          curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
+          install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+          # eksctl
+          curl -sL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar xz -C /tmp
+          install -o root -g root -m 0755 /tmp/eksctl /usr/local/bin/eksctl
+
+          # Pre-write kubeconfig for the ec2-user and ssm-user so `kubectl` works
+          # immediately on connect, without needing to run update-kubeconfig by hand.
+          for u in ec2-user ssm-user; do
+            if id "$u" &>/dev/null; then
+              sudo -u "$u" -H bash -c "aws eks update-kubeconfig --name ${EnvironmentName}-cluster --region ${AWS::Region}" || true
+            fi
+          done
       Tags:
         - Key: Name
           Value: !Sub ${EnvironmentName}-bastion
+
+  # Grants the bastion's IAM role cluster-admin access inside Kubernetes RBAC.
+  # Without this, `aws eks update-kubeconfig` still succeeds (that only needs
+  # eks:DescribeCluster), but every kubectl command fails with a 403 from the
+  # cluster itself — IAM authentication and Kubernetes authorization are two
+  # separate checks.
+  BastionClusterAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName:
+        Fn::ImportValue: !Sub ${EnvironmentName}-ClusterName
+      PrincipalArn: !GetAtt BastionRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
 
 Outputs:
   BastionInstanceId:

@@ -23,6 +23,16 @@ Parameters:
   Namespace:
     Type: String
     Default: eks-demo
+  AdminPrincipalArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional — your own IAM user/role ARN (from `aws sts get-caller-identity`).
+      Grants cluster-admin access via kubectl/console, in addition to the
+      GitHub Actions role that already has it automatically as the cluster creator.
+
+Conditions:
+  HasAdminPrincipal: !Not [!Equals [!Ref AdminPrincipalArn, '']]
 
 Resources:
   EKSOIDCProvider:
@@ -34,6 +44,23 @@ Resources:
         - sts.amazonaws.com
       ThumbprintList:
         - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+
+  # Grants a human IAM identity (you) kubectl/console access to the cluster.
+  # The GitHub Actions role gets this automatically because it created the
+  # cluster — every other principal, including your own AWS user, needs an
+  # explicit Access Entry or it'll get "Unauthorized" from kubectl/console.
+  AdminAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Condition: HasAdminPrincipal
+    Properties:
+      ClusterName:
+        Fn::ImportValue: !Sub ${EnvironmentName}-ClusterName
+      PrincipalArn: !Ref AdminPrincipalArn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
 
   # ---------- order-service: RDS secret + EventBridge publish ----------
   OrderServiceRole:
