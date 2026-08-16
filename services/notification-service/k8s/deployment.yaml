@@ -21,7 +21,7 @@ spec:
       serviceAccountName: notification-service-sa
       containers:
         - name: notification-service
-          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/eks-demo-notification-service:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION_PLACEHOLDER.amazonaws.com/eks-demo-notification-service:latest
           ports:
             - containerPort: 3005
           env:
