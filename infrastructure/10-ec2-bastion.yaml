@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  EC2 bastion host for reaching RDS from a terminal during the demo. Access is
+  via SSM Session Manager only — no SSH key pair, no open inbound ports.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: eks-demo
+  InstanceType:
+    Type: String
+    Default: t3.micro
+
+Resources:
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-bastion-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: read-db-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-DBSecretArn
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref BastionRole]
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion host — no inbound rules, egress only (SSM is outbound)
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-VpcId
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-bastion-sg
+
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      SubnetId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-PublicSubnet1
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          dnf install -y postgresql15
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-bastion
+
+Outputs:
+  BastionInstanceId:
+    Value: !Ref BastionInstance
+    Description: >-
+      Connect with: aws ssm start-session --target <this-instance-id>

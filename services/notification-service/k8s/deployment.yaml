@@ -1,0 +1,44 @@
+# Requires k8s/service-accounts.yaml (notification-service-sa, IRSA-annotated)
+# to be applied first, and infrastructure/07-sns-eventbridge.yaml +
+# 11-irsa-roles.yaml deployed. TOPIC_ARN is filled in by deploy-services.yml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: eks-demo
+  labels:
+    app: notification-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      serviceAccountName: notification-service-sa
+      containers:
+        - name: notification-service
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/eks-demo-notification-service:latest
+          ports:
+            - containerPort: 3005
+          env:
+            - name: PORT
+              value: "3005"
+            - name: TOPIC_ARN
+              value: TOPIC_ARN_PLACEHOLDER
+            - name: AWS_REGION
+              value: REGION_PLACEHOLDER
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: 3005 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3005 }
+            initialDelaySeconds: 10
+            periodSeconds: 20

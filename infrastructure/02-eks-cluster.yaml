@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  EKS cluster with a managed node group, built on top of the eks-demo VPC stack.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: eks-demo
+  ClusterName:
+    Type: String
+    Default: eks-demo-cluster
+  KubernetesVersion:
+    Type: String
+    Default: '1.30'
+  NodeInstanceType:
+    Type: String
+    Default: t3.medium
+  NodeGroupMinSize:
+    Type: Number
+    Default: 2
+  NodeGroupMaxSize:
+    Type: Number
+    Default: 4
+  NodeGroupDesiredSize:
+    Type: Number
+    Default: 2
+
+Resources:
+  EKSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ClusterName}-cluster-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+
+  EKSNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ClusterName}-node-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  ControlPlaneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EKS control plane communication with worker nodes
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-control-plane-sg
+
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt EKSClusterRole.Arn
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !Ref ControlPlaneSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub ${EnvironmentName}-PublicSubnet1
+          - Fn::ImportValue: !Sub ${EnvironmentName}-PublicSubnet2
+          - Fn::ImportValue: !Sub ${EnvironmentName}-PrivateSubnet1
+          - Fn::ImportValue: !Sub ${EnvironmentName}-PrivateSubnet2
+        EndpointPublicAccess: true
+        EndpointPrivateAccess: true
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn: EKSCluster
+    Properties:
+      ClusterName: !Ref ClusterName
+      NodegroupName: !Sub ${ClusterName}-nodegroup
+      NodeRole: !GetAtt EKSNodeRole.Arn
+      Subnets:
+        - Fn::ImportValue: !Sub ${EnvironmentName}-PrivateSubnet1
+        - Fn::ImportValue: !Sub ${EnvironmentName}-PrivateSubnet2
+      InstanceTypes:
+        - !Ref NodeInstanceType
+      ScalingConfig:
+        MinSize: !Ref NodeGroupMinSize
+        MaxSize: !Ref NodeGroupMaxSize
+        DesiredSize: !Ref NodeGroupDesiredSize
+      AmiType: AL2023_x86_64_STANDARD
+      CapacityType: ON_DEMAND
+
+  ContainerInsightsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref ClusterName
+      AddonName: amazon-cloudwatch-observability
+      ResolveConflicts: OVERWRITE
+
+Outputs:
+  ClusterName:
+    Value: !Ref EKSCluster
+    Export:
+      Name: !Sub ${EnvironmentName}-ClusterName
+  ClusterArn:
+    Value: !GetAtt EKSCluster.Arn
+  ClusterEndpoint:
+    Value: !GetAtt EKSCluster.Endpoint
+  NodeRoleArn:
+    Value: !GetAtt EKSNodeRole.Arn
+  ClusterOIDCIssuerURL:
+    Value: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
+    Description: Used to register the IAM OIDC provider for IRSA (pod-level IAM roles)
+    Export:
+      Name: !Sub ${EnvironmentName}-ClusterOIDCIssuerURL

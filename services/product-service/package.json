@@ -1,0 +1,12 @@
+{
+  "name": "product-service",
+  "version": "1.0.0",
+  "description": "product microservice for EKS demo (DynamoDB)",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "express": "^4.19.2",
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.600.0"
+  }
+}

@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  SNS topic for order notifications + a custom EventBridge bus. order-service
+  publishes an "OrderPlaced" event to the bus; a rule fans it out to the
+  ProcessOrder Lambda and (indirectly, via the Lambda) to SNS.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: eks-demo
+  NotificationEmail:
+    Type: String
+    Default: ''
+    Description: Optional — email address to subscribe to order notifications for the demo
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref NotificationEmail, '']]
+
+Resources:
+  OrderNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${EnvironmentName}-order-notifications
+      DisplayName: EKS Demo Order Notifications
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref OrderNotificationsTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub ${EnvironmentName}-bus
+
+Outputs:
+  TopicArn:
+    Value: !Ref OrderNotificationsTopic
+    Export:
+      Name: !Sub ${EnvironmentName}-OrderNotificationsTopicArn
+  EventBusName:
+    Value: !Ref EventBus
+    Export:
+      Name: !Sub ${EnvironmentName}-EventBusName
+  EventBusArn:
+    Value: !GetAtt EventBus.Arn
+    Export:
+      Name: !Sub ${EnvironmentName}-EventBusArn

@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  IRSA (IAM Roles for Service Accounts): registers the EKS cluster's OIDC
+  provider with IAM, then creates one narrowly-scoped IAM role per service
+  that needs AWS access, trusted only for that service's Kubernetes
+  ServiceAccount. Pods get temporary credentials — no static AWS keys ever
+  live in a container image or Secret.
+
+  Note on the AssumeRolePolicyDocument below: the trust policy's condition
+  *key* has to include the cluster's OIDC issuer hostname (e.g.
+  "oidc.eks.us-east-1.amazonaws.com/id/XXXX:sub"), which is only known after
+  the cluster exists. CloudFormation can't substitute a dynamic value into a
+  YAML/JSON map *key* directly — so instead the whole policy document is
+  built as a single JSON string via Fn::Sub, and CloudFormation parses that
+  string into the actual policy at deploy time. That's why these use the
+  two-argument "Fn::Sub: [templateString, varMap]" form with a literal
+  block scalar, rather than nested YAML maps.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: eks-demo
+  Namespace:
+    Type: String
+    Default: eks-demo
+
+Resources:
+  EKSOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url:
+        Fn::ImportValue: !Sub ${EnvironmentName}-ClusterOIDCIssuerURL
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+
+  # ---------- order-service: RDS secret + EventBridge publish ----------
+  OrderServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-order-service-irsa-role
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${OIDCProviderArn}" },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcIssuerNoScheme}:sub": "system:serviceaccount:${NamespaceVar}:order-service-sa",
+                      "${OidcIssuerNoScheme}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OIDCProviderArn: !Ref EKSOIDCProvider
+            NamespaceVar: !Ref Namespace
+            OidcIssuerNoScheme:
+              Fn::Select:
+                - 1
+                - Fn::Split:
+                    - 'https://'
+                    - Fn::ImportValue: !Sub ${EnvironmentName}-ClusterOIDCIssuerURL
+      Policies:
+        - PolicyName: order-service-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-DBSecretArn
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-EventBusArn
+
+  # ---------- product-service: DynamoDB ----------
+  ProductServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-product-service-irsa-role
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${OIDCProviderArn}" },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcIssuerNoScheme}:sub": "system:serviceaccount:${NamespaceVar}:product-service-sa",
+                      "${OidcIssuerNoScheme}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OIDCProviderArn: !Ref EKSOIDCProvider
+            NamespaceVar: !Ref Namespace
+            OidcIssuerNoScheme:
+              Fn::Select:
+                - 1
+                - Fn::Split:
+                    - 'https://'
+                    - Fn::ImportValue: !Sub ${EnvironmentName}-ClusterOIDCIssuerURL
+      Policies:
+        - PolicyName: product-service-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-ProductsTableArn
+
+  # ---------- notification-service: SNS publish ----------
+  NotificationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-notification-service-irsa-role
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${OIDCProviderArn}" },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcIssuerNoScheme}:sub": "system:serviceaccount:${NamespaceVar}:notification-service-sa",
+                      "${OidcIssuerNoScheme}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OIDCProviderArn: !Ref EKSOIDCProvider
+            NamespaceVar: !Ref Namespace
+            OidcIssuerNoScheme:
+              Fn::Select:
+                - 1
+                - Fn::Split:
+                    - 'https://'
+                    - Fn::ImportValue: !Sub ${EnvironmentName}-ClusterOIDCIssuerURL
+      Policies:
+        - PolicyName: notification-service-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-OrderNotificationsTopicArn
+
+Outputs:
+  OrderServiceRoleArn:
+    Value: !GetAtt OrderServiceRole.Arn
+  ProductServiceRoleArn:
+    Value: !GetAtt ProductServiceRole.Arn
+  NotificationServiceRoleArn:
+    Value: !GetAtt NotificationServiceRole.Arn

@@ -1,0 +1,11 @@
+{
+  "name": "notification-service",
+  "version": "1.0.0",
+  "description": "notification microservice for EKS demo (SNS)",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "express": "^4.19.2",
+    "@aws-sdk/client-sns": "^3.600.0"
+  }
+}

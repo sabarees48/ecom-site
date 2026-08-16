@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Two Lambda functions for the event-driven / serverless slice of the demo:
+    - ProcessOrderFunction: triggered by the "OrderPlaced" EventBridge rule,
+      logs the event to DynamoDB (OrderEvents table) and publishes to SNS.
+    - AnalyticsFunction: invoked by API Gateway, returns a small JSON summary
+      by scanning the Products and OrderEvents DynamoDB tables.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: eks-demo
+
+Resources:
+  # ---------- ProcessOrderFunction ----------
+  ProcessOrderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-process-order-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: process-order-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-OrderEventsTableArn
+              - Effect: Allow
+                Action: sns:Publish
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-OrderNotificationsTopicArn
+
+  ProcessOrderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${EnvironmentName}-process-order
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt ProcessOrderRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          ORDER_EVENTS_TABLE:
+            Fn::ImportValue: !Sub ${EnvironmentName}-OrderEventsTableName
+          TOPIC_ARN:
+            Fn::ImportValue: !Sub ${EnvironmentName}-OrderNotificationsTopicArn
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+          const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+
+          const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+          const sns = new SNSClient({});
+
+          exports.handler = async (event) => {
+            console.log('Received EventBridge event:', JSON.stringify(event));
+            const detail = event.detail || {};
+            const eventId = `${event.id || Date.now()}`;
+
+            await ddb.send(new PutCommand({
+              TableName: process.env.ORDER_EVENTS_TABLE,
+              Item: {
+                eventId,
+                orderId: detail.orderId || 'unknown',
+                status: detail.status || 'PLACED',
+                receivedAt: new Date().toISOString(),
+                raw: JSON.stringify(detail),
+              },
+            }));
+
+            await sns.send(new PublishCommand({
+              TopicArn: process.env.TOPIC_ARN,
+              Subject: 'New order placed',
+              Message: `Order ${detail.orderId || 'unknown'} was placed and logged (event ${eventId}).`,
+            }));
+
+            return { statusCode: 200 };
+          };
+
+  ProcessOrderEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${EnvironmentName}-order-placed-rule
+      EventBusName:
+        Fn::ImportValue: !Sub ${EnvironmentName}-EventBusName
+      EventPattern:
+        source: ['eks.demo.orders']
+        detail-type: ['OrderPlaced']
+      Targets:
+        - Id: ProcessOrderTarget
+          Arn: !GetAtt ProcessOrderFunction.Arn
+
+  ProcessOrderEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ProcessOrderFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ProcessOrderEventRule.Arn
+
+  # ---------- AnalyticsFunction ----------
+  AnalyticsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-analytics-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: analytics-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                Resource:
+                  - Fn::ImportValue: !Sub ${EnvironmentName}-ProductsTableArn
+                  - Fn::ImportValue: !Sub ${EnvironmentName}-OrderEventsTableArn
+
+  AnalyticsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${EnvironmentName}-analytics
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt AnalyticsRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          PRODUCTS_TABLE:
+            Fn::ImportValue: !Sub ${EnvironmentName}-ProductsTableName
+          ORDER_EVENTS_TABLE:
+            Fn::ImportValue: !Sub ${EnvironmentName}-OrderEventsTableName
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, ScanCommand } = require('@aws-sdk/lib-dynamodb');
+
+          const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+          exports.handler = async () => {
+            const [products, orderEvents] = await Promise.all([
+              ddb.send(new ScanCommand({ TableName: process.env.PRODUCTS_TABLE })),
+              ddb.send(new ScanCommand({ TableName: process.env.ORDER_EVENTS_TABLE })),
+            ]);
+
+            const body = {
+              generatedAt: new Date().toISOString(),
+              productCount: products.Items?.length || 0,
+              orderEventCount: orderEvents.Items?.length || 0,
+              recentOrderEvents: (orderEvents.Items || []).slice(-5),
+            };
+
+            return {
+              statusCode: 200,
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+              },
+              body: JSON.stringify(body),
+            };
+          };
+
+Outputs:
+  ProcessOrderFunctionArn:
+    Value: !GetAtt ProcessOrderFunction.Arn
+  AnalyticsFunctionArn:
+    Value: !GetAtt AnalyticsFunction.Arn
+    Export:
+      Name: !Sub ${EnvironmentName}-AnalyticsFunctionArn
+  AnalyticsFunctionName:
+    Value: !Ref AnalyticsFunction
+    Export:
+      Name: !Sub ${EnvironmentName}-AnalyticsFunctionName

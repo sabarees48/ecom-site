@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudWatch dashboard summarizing the demo's AWS services, plus alarms
+  (RDS CPU, Lambda errors) that notify the existing SNS topic.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: eks-demo
+
+Resources:
+  RDSHighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${EnvironmentName}-rds-high-cpu
+      AlarmDescription: RDS CPU utilization above 80% for 10 minutes
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Sub ${EnvironmentName}-orders-db
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - Fn::ImportValue: !Sub ${EnvironmentName}-OrderNotificationsTopicArn
+
+  ProcessOrderErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${EnvironmentName}-process-order-lambda-errors
+      AlarmDescription: ProcessOrder Lambda returned one or more errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub ${EnvironmentName}-process-order
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - Fn::ImportValue: !Sub ${EnvironmentName}-OrderNotificationsTopicArn
+
+  DemoDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${EnvironmentName}-dashboard
+      DashboardBody:
+        Fn::Sub: |
+          {
+            "widgets": [
+              {
+                "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+                "properties": {
+                  "title": "RDS CPU Utilization",
+                  "metrics": [["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "${EnvironmentName}-orders-db"]],
+                  "period": 300, "stat": "Average", "region": "${AWS::Region}"
+                }
+              },
+              {
+                "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+                "properties": {
+                  "title": "ProcessOrder Lambda: Invocations / Errors",
+                  "metrics": [
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${EnvironmentName}-process-order"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${EnvironmentName}-process-order"]
+                  ],
+                  "period": 300, "stat": "Sum", "region": "${AWS::Region}"
+                }
+              },
+              {
+                "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Analytics Lambda: Invocations / Duration",
+                  "metrics": [
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${EnvironmentName}-analytics"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${EnvironmentName}-analytics"]
+                  ],
+                  "period": 300, "stat": "Average", "region": "${AWS::Region}"
+                }
+              },
+              {
+                "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+                "properties": {
+                  "title": "DynamoDB Consumed Capacity",
+                  "metrics": [
+                    ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${EnvironmentName}-products"],
+                    ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${EnvironmentName}-products"],
+                    ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${EnvironmentName}-order-events"],
+                    ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${EnvironmentName}-order-events"]
+                  ],
+                  "period": 300, "stat": "Sum", "region": "${AWS::Region}"
+                }
+              }
+            ]
+          }
+
+Outputs:
+  DashboardURL:
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${EnvironmentName}-dashboard
