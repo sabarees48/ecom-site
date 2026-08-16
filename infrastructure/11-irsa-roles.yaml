@@ -197,6 +197,10 @@ Resources:
                   Fn::ImportValue: !Sub ${EnvironmentName}-OrderNotificationsTopicArn
 
 Outputs:
+  EKSOIDCProviderArn:
+    Value: !Ref EKSOIDCProvider
+    Export:
+      Name: !Sub ${EnvironmentName}-EKSOIDCProviderArn
   OrderServiceRoleArn:
     Value: !GetAtt OrderServiceRole.Arn
   ProductServiceRoleArn:

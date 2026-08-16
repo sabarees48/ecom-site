@@ -131,19 +131,11 @@ on the cluster.
 **This takes ~20–25 minutes** (EKS + RDS creation are the slow parts) — a
 natural point to switch to an architecture-diagram slide during a live demo.
 
-### 4. Install the AWS Load Balancer Controller (one-time, run locally)
+### 4. AWS Load Balancer Controller
 
-```bash
-aws eks update-kubeconfig --name eks-demo-cluster --region us-east-1
-
-helm repo add eks https://aws.github.io/eks-charts
-helm repo update
-helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  -n kube-system \
-  --set clusterName=eks-demo-cluster \
-  --set serviceAccount.create=true \
-  --set serviceAccount.name=aws-load-balancer-controller
-```
+This is handled automatically now — `deploy-infra.yml` deploys the IAM
+policy + IRSA role for the controller (`infrastructure/13-alb-controller-irsa.yaml`)
+and installs it via Helm as part of the workflow. No manual step needed.
 
 ### 5. Push to `main`
 
