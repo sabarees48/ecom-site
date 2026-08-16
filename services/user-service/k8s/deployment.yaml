@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: user-service
-          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/eks-demo-user-service:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION_PLACEHOLDER.amazonaws.com/eks-demo-user-service:latest
           ports:
             - containerPort: 3001
           env:
