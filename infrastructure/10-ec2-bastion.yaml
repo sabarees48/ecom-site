@@ -42,7 +42,7 @@ Resources:
   BastionSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Bastion host — no inbound rules, egress only (SSM is outbound)
+      GroupDescription: Bastion host - no inbound rules, egress only (SSM is outbound)
       VpcId:
         Fn::ImportValue: !Sub ${EnvironmentName}-VpcId
       SecurityGroupEgress:
