@@ -22,7 +22,7 @@ spec:
       serviceAccountName: order-service-sa
       containers:
         - name: order-service
-          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/eks-demo-order-service:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION_PLACEHOLDER.amazonaws.com/eks-demo-order-service:latest
           ports:
             - containerPort: 3003
           env:
