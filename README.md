@@ -139,6 +139,21 @@ and installs it via Helm as part of the workflow. No manual step needed.
 
 ### 5. Push to `main`
 
+Changes under `services/**` trigger **Deploy Services**. Its `apply-ingress`
+job waits for the ALB to be provisioned and then automatically re-deploys
+`04-s3-frontend.yaml` with the ALB's hostname, which adds a CloudFront
+behavior proxying `/api/*` to it — this is what lets the frontend (served
+over HTTPS via CloudFront) call the backend without hitting a browser
+mixed-content block (browsers refuse active requests from an HTTPS page to
+a plain-HTTP endpoint). CloudFront changes take a few minutes to propagate
+globally after this step.
+
+Changes under `frontend/**` trigger **Deploy Frontend**, which syncs to S3
+and invalidates the CloudFront cache. Once the `/api/*` behavior above is in
+place, leave the frontend's "API base URL" field blank — it'll use relative
+paths (`/api/users`, etc.), which resolve against CloudFront's own domain
+and get proxied through automatically, no ALB DNS name needed.
+
 Changes under `services/**` trigger **Deploy Services** (also resolves the
 RDS host, DB secret ARN, and SNS topic ARN from CloudFormation outputs and
 injects them into the pod env at rollout time). Changes under `frontend/**`
@@ -164,7 +179,35 @@ trigger **Deploy Frontend**. Both also support manual `workflow_dispatch`.
 10. **Bastion**: `aws ssm start-session --target <instance-id>` then `psql`
     into RDS directly, to show the data behind the API.
 
-## Verifying the cluster
+## Prometheus & Grafana (Kubernetes-native monitoring)
+
+Alongside CloudWatch (AWS-side metrics), the cluster also runs the
+`kube-prometheus-stack` (Prometheus + Grafana + Alertmanager) via Helm —
+installed automatically by `deploy-infra.yml`'s `install-prometheus-grafana`
+job. All 5 microservices expose a `/metrics` endpoint (via `prom-client`),
+auto-discovered by Prometheus through the `ServiceMonitor` objects in
+`k8s/service-monitors.yaml`.
+
+**Get the Grafana URL:**
+```bash
+kubectl get svc kube-prometheus-stack-grafana -n monitoring \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+Grafana provisions its own separate Network Load Balancer (NLB) from your
+app's ALB — give it a couple minutes to appear after the install job runs.
+
+**Log in:** username `admin`, password `admin` unless you set a
+`GRAFANA_ADMIN_PASSWORD` repository secret before running `deploy-infra.yml`
+(change it after first login either way).
+
+**What's there out of the box:** the chart ships several default dashboards
+(cluster overview, node metrics, pod resource usage) automatically. For your
+5 services' custom metrics (`http_requests_total`,
+`http_request_duration_seconds`), create a new dashboard and query e.g.
+`sum(rate(http_requests_total[5m])) by (route, status_code)` to show live
+request rate per endpoint during the demo.
+
+
 
 ```bash
 kubectl get nodes

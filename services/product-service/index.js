@@ -3,6 +3,25 @@ const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, ScanCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const { randomUUID } = require('crypto');
 
+// --- Prometheus metrics ---
+const promClient = require('prom-client');
+const register = new promClient.Registry();
+promClient.collectDefaultMetrics({ register });
+
+const httpRequestsTotal = new promClient.Counter({
+  name: 'http_requests_total',
+  help: 'Total HTTP requests received',
+  labelNames: ['method', 'route', 'status_code'],
+  registers: [register],
+});
+
+const httpRequestDurationSeconds = new promClient.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'HTTP request duration in seconds',
+  labelNames: ['method', 'route', 'status_code'],
+  registers: [register],
+});
+
 const app = express();
 const PORT = process.env.PORT || 3002;
 const SERVICE_NAME = 'product-service';
@@ -24,6 +43,16 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+app.use((req, res, next) => {
+  const end = httpRequestDurationSeconds.startTimer();
+  res.on('finish', () => {
+    const labels = { method: req.method, route: req.path, status_code: res.statusCode };
+    httpRequestsTotal.inc(labels);
+    end(labels);
+  });
   next();
 });
 
@@ -67,6 +96,11 @@ app.post('/api/products', async (req, res) => {
 
 app.get('/', (req, res) => {
   res.status(200).json({ message: 'Hello from ' + SERVICE_NAME, mode: AWS_MODE ? 'dynamodb' : 'mock', hostname: require('os').hostname() });
+});
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
 });
 
 app.listen(PORT, () => {

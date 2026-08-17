@@ -10,6 +10,7 @@ spec:
   selector:
     app: user-service
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 3001
       protocol: TCP

@@ -10,6 +10,7 @@ spec:
   selector:
     app: order-service
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 3003
       protocol: TCP

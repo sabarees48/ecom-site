@@ -1,10 +1,29 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: S3 bucket configured for static website hosting of the demo frontend.
+Description: >
+  Private S3 bucket + CloudFront distribution for the frontend, using Origin
+  Access Control (OAC) — the bucket has no public access at all; only
+  CloudFront (via a signed request) can read from it. This replaces the
+  earlier plain-S3-website-hosting setup with HTTPS, caching, and a properly
+  locked-down bucket.
 
 Parameters:
   BucketName:
     Type: String
     Description: Globally-unique S3 bucket name for the frontend (e.g. eks-demo-frontend-123456789012)
+  AlbDnsName:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional — the ALB's DNS name (from `kubectl get ingress`). Leave blank
+      on first deploy since the ALB doesn't exist yet; the pipeline
+      automatically re-supplies this once it does, adding a CloudFront
+      behavior that proxies /api/* to it. This lets the frontend call the
+      backend over HTTPS via CloudFront's domain instead of hitting the
+      ALB's plain-HTTP endpoint directly, which browsers block as mixed
+      content from an HTTPS page.
+
+Conditions:
+  HasAlbDnsName: !Not [!Equals [!Ref AlbDnsName, '']]
 
 Resources:
   FrontendBucket:
@@ -12,19 +31,86 @@ Resources:
     Properties:
       BucketName: !Ref BucketName
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: false
-        BlockPublicPolicy: false
-        IgnorePublicAcls: false
-        RestrictPublicBuckets: false
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ['*']
             AllowedMethods: [GET]
             AllowedOrigins: ['*']
             MaxAge: 3000
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${BucketName}-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        Origins: !If
+          - HasAlbDnsName
+          - - Id: s3-frontend-origin
+              DomainName: !GetAtt FrontendBucket.RegionalDomainName
+              OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+              S3OriginConfig:
+                OriginAccessIdentity: ''
+            - Id: alb-api-origin
+              DomainName: !Ref AlbDnsName
+              CustomOriginConfig:
+                OriginProtocolPolicy: http-only
+                HTTPPort: 80
+                OriginSSLProtocols: [TLSv1.2]
+          - - Id: s3-frontend-origin
+              DomainName: !GetAtt FrontendBucket.RegionalDomainName
+              OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+              S3OriginConfig:
+                OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: s3-frontend-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # Managed-CachingOptimized policy — long cache for static assets.
+          # Since the app uses hash-based routing (#/users, #/orders, ...),
+          # the hash fragment never reaches CloudFront/S3 at all, so there's
+          # no need for the usual SPA path-rewriting complexity here.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CacheBehaviors: !If
+          - HasAlbDnsName
+          - - PathPattern: /api/*
+              TargetOriginId: alb-api-origin
+              ViewerProtocolPolicy: redirect-to-https
+              AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+              CachedMethods: [GET, HEAD]
+              Compress: true
+              # Managed-CachingDisabled — API responses must never be cached.
+              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+              # Managed-AllViewer — forwards all headers/query strings to the
+              # ALB, since the API needs the real request intact.
+              OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+          - !Ref AWS::NoValue
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
 
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -33,16 +119,23 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: PublicReadGetObject
+          - Sid: AllowCloudFrontServicePrincipalReadOnly
             Effect: Allow
-            Principal: '*'
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: s3:GetObject
             Resource: !Sub arn:aws:s3:::${FrontendBucket}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution.Id}
 
 Outputs:
   BucketName:
     Value: !Ref FrontendBucket
-  WebsiteURL:
-    Value: !GetAtt FrontendBucket.WebsiteURL
   BucketArn:
     Value: !GetAtt FrontendBucket.Arn
+  CloudFrontDomainName:
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Description: The frontend's public URL is https://<this value>
+  CloudFrontDistributionId:
+    Value: !Ref CloudFrontDistribution

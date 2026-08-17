@@ -90,6 +90,13 @@ Resources:
                   - s3:DeleteObject
                 Resource:
                   - '*'
+              - Sid: CloudFrontInvalidation
+                Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                  - cloudfront:GetInvalidation
+                  - cloudfront:ListDistributions
+                Resource: '*'
               - Sid: VpcNetworkingAccess
                 Effect: Allow
                 Action:

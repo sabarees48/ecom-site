@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  EBS CSI driver as an EKS addon, with its own IRSA role. Prometheus and
+  Grafana both request PersistentVolumeClaims for their data — without this,
+  those pods sit in Pending forever with "no volume plugin matched" events,
+  since EKS clusters don't provision EBS volumes out of the box.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: eks-demo
+
+Resources:
+  EBSCSIDriverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-ebs-csi-driver-irsa-role
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${OIDCProviderArn}" },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcIssuerNoScheme}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa",
+                      "${OidcIssuerNoScheme}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OIDCProviderArn:
+              Fn::ImportValue: !Sub ${EnvironmentName}-EKSOIDCProviderArn
+            OidcIssuerNoScheme:
+              Fn::Select:
+                - 1
+                - Fn::Split:
+                    - 'https://'
+                    - Fn::ImportValue: !Sub ${EnvironmentName}-ClusterOIDCIssuerURL
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
+  EBSCSIAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName:
+        Fn::ImportValue: !Sub ${EnvironmentName}-ClusterName
+      AddonName: aws-ebs-csi-driver
+      ServiceAccountRoleArn: !GetAtt EBSCSIDriverRole.Arn
+      ResolveConflicts: OVERWRITE
+
+Outputs:
+  EBSCSIDriverRoleArn:
+    Value: !GetAtt EBSCSIDriverRole.Arn
