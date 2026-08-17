@@ -250,8 +250,14 @@ async function renderOverview() {
     try {
       const res = await fetch(`${base}${s.path}`);
       const json = await res.json();
-      document.getElementById(`count-${s.key}`).textContent = json.count ?? (json.data || []).length;
       const pill = document.getElementById(`pill-${s.key}`);
+      if (!res.ok) {
+        document.getElementById(`count-${s.key}`).textContent = '\u2014';
+        pill.textContent = `error ${res.status}`;
+        pill.className = 'pill down';
+        return;
+      }
+      document.getElementById(`count-${s.key}`).textContent = json.count ?? (json.data || []).length;
       pill.textContent = 'up';
       pill.className = 'pill up';
     } catch (err) {
@@ -287,6 +293,19 @@ async function renderServiceTable(navItem) {
   try {
     const res = await fetch(`${base}${navItem.path}`);
     const json = await res.json();
+
+    if (!res.ok) {
+      document.getElementById('tableStatus').textContent = `error ${res.status}`;
+      document.getElementById('tableStatus').className = 'pill down';
+      document.getElementById('tableWrap').innerHTML = `
+        <div class="empty-state">
+          ${navItem.label} returned HTTP ${res.status}.<br/>
+          ${json.error || 'Unknown error'}${json.details ? `<br/><span style="font-size:11px; color:#64748b;">${json.details}</span>` : ''}
+        </div>
+      `;
+      return;
+    }
+
     const rows = json.data || [];
     document.getElementById('tableStatus').textContent = 'up';
     document.getElementById('tableStatus').className = 'pill up';
