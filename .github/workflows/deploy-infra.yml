@@ -257,21 +257,32 @@ jobs:
       - name: Install Helm
         run: |
           curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-      - name: Get ALB controller role ARN
+      - name: Get ALB controller role ARN and VPC ID
         id: role
         run: |
           ARN=$(aws cloudformation describe-stacks --stack-name eks-demo-alb-controller-irsa \
             --query "Stacks[0].Outputs[?OutputKey=='ALBControllerRoleArn'].OutputValue" --output text)
+          VPC_ID=$(aws cloudformation describe-stacks --stack-name eks-demo-vpc \
+            --query "Stacks[0].Outputs[?OutputKey=='VpcId'].OutputValue" --output text)
           echo "role_arn=$ARN" >> "$GITHUB_OUTPUT"
+          echo "vpc_id=$VPC_ID" >> "$GITHUB_OUTPUT"
       - name: Install/upgrade AWS Load Balancer Controller
         env:
           ROLE_ARN: ${{ steps.role.outputs.role_arn }}
+          VPC_ID: ${{ steps.role.outputs.vpc_id }}
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
+          # vpcId and region are passed explicitly rather than left to the
+          # controller's IMDS auto-discovery — EKS managed node groups often
+          # set the IMDS hop limit to 1, which blocks pods (one hop further
+          # than the host) from reaching the metadata service, causing the
+          # controller to crash-loop with "context deadline exceeded".
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=eks-demo-cluster \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=$VPC_ID \
             --set serviceAccount.create=true \
             --set serviceAccount.name=aws-load-balancer-controller \
             --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$ROLE_ARN \
